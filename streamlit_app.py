@@ -36,18 +36,20 @@ with st.form("dados_form"):
 # ==========================================
 def gerar_documentos(insc, prop, compr):
     with sync_playwright() as p:
-        # Configuração otimizada para servidores em nuvem mantida
+        # Configuração máxima de sobrevivência para o Streamlit Cloud
         browser = p.chromium.launch(
             headless=True,
             args=[
                 "--disable-dev-shm-usage",
                 "--no-sandbox",
                 "--disable-setuid-sandbox",
-                "--disable-gpu"
+                "--disable-gpu",
+                "--no-zygote",          # Evita a pré-alocação de memória do Chrome
+                "--single-process",     # Força o navegador a rodar em uma única thread
+                "--disable-features=site-per-process" # Remove o isolamento de segurança pesado
             ]
         )
         
-        # 1ª Correção: Injetando um User-Agent real de Windows/Chrome
         context = browser.new_context(
             accept_downloads=True,
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -60,7 +62,6 @@ def gerar_documentos(insc, prop, compr):
             # =========================================================
             # 0. Sessão (Autenticação)
             # =========================================================
-            # 2ª Correção: wait_until="domcontentloaded" e aumento de timeout para 60 segundos
             page.goto(
                 "https://tributos.elmartecnologia.com.br/portal/?ecode=201082", 
                 wait_until="domcontentloaded",
@@ -115,7 +116,6 @@ def gerar_documentos(insc, prop, compr):
             return None
         finally:
             browser.close()
-
 # ==========================================
 # EXECUÇÃO APÓS O CLIQUE
 # ==========================================
