@@ -36,7 +36,7 @@ with st.form("dados_form"):
 # ==========================================
 def gerar_documentos(insc, prop, compr):
     with sync_playwright() as p:
-        # Configuração otimizada para servidores em nuvem
+        # Configuração otimizada para servidores em nuvem mantida
         browser = p.chromium.launch(
             headless=True,
             args=[
@@ -46,36 +46,62 @@ def gerar_documentos(insc, prop, compr):
                 "--disable-gpu"
             ]
         )
-        context = browser.new_context(accept_downloads=True)
+        
+        # 1ª Correção: Injetando um User-Agent real de Windows/Chrome
+        context = browser.new_context(
+            accept_downloads=True,
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        )
         page = context.new_page()
         
         documentos = {}
 
         try:
-            # 0. Sessão
-            page.goto("https://tributos.elmartecnologia.com.br/portal/?ecode=201082")
+            # =========================================================
+            # 0. Sessão (Autenticação)
+            # =========================================================
+            # 2ª Correção: wait_until="domcontentloaded" e aumento de timeout para 60 segundos
+            page.goto(
+                "https://tributos.elmartecnologia.com.br/portal/?ecode=201082", 
+                wait_until="domcontentloaded",
+                timeout=60000
+            )
             time.sleep(2)
 
+            # =========================================================
             # 1. CND
+            # =========================================================
             with st.spinner("Gerando CND..."):
-                page.goto("https://tributos.elmartecnologia.com.br/portal/buscaCertidaoImob.php")
+                page.goto(
+                    "https://tributos.elmartecnologia.com.br/portal/buscaCertidaoImob.php",
+                    wait_until="domcontentloaded",
+                    timeout=60000
+                )
                 page.fill("#vINSCRICAO", insc)
                 with context.expect_page() as popup_info:
                     page.click("#enviarINSCRICAO")
+                
                 aba_cnd = popup_info.value
                 aba_cnd.wait_for_load_state("networkidle")
                 pdf_cnd = aba_cnd.pdf(format="A4", print_background=True)
                 documentos['cnd'] = pdf_cnd
                 aba_cnd.close()
 
+            # =========================================================
             # 2. ITBI
+            # =========================================================
             with st.spinner("Gerando Guia de ITBI..."):
-                page.goto("https://tributos.elmartecnologia.com.br/portal/buscaITBI.php")
+                page.goto(
+                    "https://tributos.elmartecnologia.com.br/portal/buscaITBI.php",
+                    wait_until="domcontentloaded",
+                    timeout=60000
+                )
                 page.fill("#INSCRICAO", insc)
                 page.fill("#CPF_PROP", prop)
                 page.fill("#CPF_COMPR", compr)
                 with context.expect_page() as popup_info:
                     page.click("#enviarINSCRICAO")
+                
                 aba_itbi = popup_info.value
                 aba_itbi.wait_for_load_state("networkidle")
                 pdf_itbi = aba_itbi.pdf(format="A4", print_background=True)
