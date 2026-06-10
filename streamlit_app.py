@@ -2,18 +2,25 @@ import streamlit as st
 from playwright.sync_api import sync_playwright
 import os
 import time
-import subprocess
-import os
 
-if not os.path.exists("/home/appuser/.cache/ms-playwright"):
-    subprocess.run(["playwright", "install", "chromium"])
-# Configuração da página
+# ==========================================
+# PREPARAÇÃO DO AMBIENTE NA NUVEM
+# ==========================================
+@st.cache_resource(show_spinner=False)
+def instalar_navegador():
+    # Força a instalação do Chromium no servidor Linux do Streamlit
+    os.system("playwright install chromium")
+
+instalar_navegador()
+
+# ==========================================
+# INTERFACE DO USUÁRIO (MANTIDA INTACTA)
+# ==========================================
 st.set_page_config(page_title="Emissor ITBI/CND", page_icon="📄")
 
 st.title("📄 Automação de Tributos - Elmar")
 st.markdown("Preencha os dados abaixo para gerar a CND e a Guia de ITBI automaticamente.")
 
-# Formulário de entrada
 with st.form("dados_form"):
     col1, col2 = st.columns(2)
     with col1:
@@ -24,10 +31,11 @@ with st.form("dados_form"):
     
     submit_button = st.form_submit_button("Gerar Documentos")
 
-# Função de automação adaptada para Streamlit
+# ==========================================
+# MOTOR DE AUTOMAÇÃO
+# ==========================================
 def gerar_documentos(insc, prop, compr):
     with sync_playwright() as p:
-        # No servidor, sempre usamos headless=True
         browser = p.chromium.launch(headless=True)
         context = browser.new_context(accept_downloads=True)
         page = context.new_page()
@@ -47,7 +55,6 @@ def gerar_documentos(insc, prop, compr):
                     page.click("#enviarINSCRICAO")
                 aba_cnd = popup_info.value
                 aba_cnd.wait_for_load_state("networkidle")
-                # Geramos o PDF em memória (bytes)
                 pdf_cnd = aba_cnd.pdf(format="A4", print_background=True)
                 documentos['cnd'] = pdf_cnd
                 aba_cnd.close()
@@ -69,12 +76,14 @@ def gerar_documentos(insc, prop, compr):
             return documentos
 
         except Exception as e:
-            st.error(f"Erro na automação: {e}")
+            st.error(f"Erro durante a navegação do robô: {e}")
             return None
         finally:
             browser.close()
 
-# Lógica após clicar no botão
+# ==========================================
+# EXECUÇÃO APÓS O CLIQUE
+# ==========================================
 if submit_button:
     if not inscricao or not cpf_prop or not cpf_compr:
         st.warning("Por favor, preencha todos os campos.")
