@@ -2,7 +2,11 @@ import streamlit as st
 from playwright.sync_api import sync_playwright
 import os
 import time
+import subprocess
+import os
 
+if not os.path.exists("/home/appuser/.cache/ms-playwright"):
+    subprocess.run(["playwright", "install", "chromium"])
 # Configuração da página
 st.set_page_config(page_title="Emissor ITBI/CND", page_icon="📄")
 
