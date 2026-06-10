@@ -36,7 +36,16 @@ with st.form("dados_form"):
 # ==========================================
 def gerar_documentos(insc, prop, compr):
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
+        # Configuração otimizada para servidores em nuvem
+        browser = p.chromium.launch(
+            headless=True,
+            args=[
+                "--disable-dev-shm-usage",
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-gpu"
+            ]
+        )
         context = browser.new_context(accept_downloads=True)
         page = context.new_page()
         
