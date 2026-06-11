@@ -119,28 +119,46 @@ def gerar_documentos(insc, prop, compr):
 # ==========================================
 # EXECUÇÃO APÓS O CLIQUE
 # ==========================================
+# 1. Cria a "memória" do aplicativo se ela ainda não existir
+if 'arquivos_gerados' not in st.session_state:
+    st.session_state.arquivos_gerados = None
+    st.session_state.inscricao_salva = ""
+
+# 2. Ação principal: O que acontece quando clica em Gerar
 if submit_button:
     if not inscricao or not cpf_prop or not cpf_compr:
         st.warning("Por favor, preencha todos os campos.")
     else:
+        # Limpa a memória anterior caso esteja gerando uma nova guia
+        st.session_state.arquivos_gerados = None 
+        
         res = gerar_documentos(inscricao, cpf_prop, cpf_compr)
         
         if res:
+            # Em vez de apenas exibir, nós SALVAMOS os PDFs na memória
+            st.session_state.arquivos_gerados = res
+            st.session_state.inscricao_salva = inscricao
             st.success("Documentos gerados com sucesso!")
-            col_d1, col_d2 = st.columns(2)
-            
-            with col_d1:
-                st.download_button(
-                    label="⬇️ Baixar CND",
-                    data=res['cnd'],
-                    file_name=f"CND_{inscricao}.pdf",
-                    mime="application/pdf"
-                )
-            
-            with col_d2:
-                st.download_button(
-                    label="⬇️ Baixar Guia ITBI",
-                    data=res['itbi'],
-                    file_name=f"ITBI_{inscricao}.pdf",
-                    mime="application/pdf"
-                )
+
+# 3. Exibição dos botões: Fica FORA do bloco do botão Gerar.
+# O Streamlit vai sempre checar a memória. Se tiver arquivo lá, ele mostra os botões.
+if st.session_state.arquivos_gerados:
+    st.markdown("---")
+    st.markdown("### 🗂️ Arquivos Prontos")
+    col_d1, col_d2 = st.columns(2)
+    
+    with col_d1:
+        st.download_button(
+            label="⬇️ Baixar CND",
+            data=st.session_state.arquivos_gerados['cnd'],
+            file_name=f"CND_{st.session_state.inscricao_salva}.pdf",
+            mime="application/pdf"
+        )
+    
+    with col_d2:
+        st.download_button(
+            label="⬇️ Baixar Guia ITBI",
+            data=st.session_state.arquivos_gerados['itbi'],
+            file_name=f"ITBI_{st.session_state.inscricao_salva}.pdf",
+            mime="application/pdf"
+        )
