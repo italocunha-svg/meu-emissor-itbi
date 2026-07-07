@@ -22,11 +22,12 @@ st.title("📄 Automação de Tributos - Elmar")
 st.markdown("Preencha os dados abaixo para gerar a CND e a Guia de ITBI automaticamente.")
 
 with st.form("dados_form"):
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns(3)
     with col1:
         inscricao = st.text_input("Inscrição Imobiliária", placeholder="Ex: 123456")
+    with col2:     
         cpf_prop = st.text_input("CPF/CNPJ do Vendedor", placeholder="000.000.000-00")
-    with col2:
+    with col3:
         cpf_compr = st.text_input("CPF/CNPJ do Comprador", placeholder="000.000.000-00")
     
     submit_button = st.form_submit_button("Gerar Documentos")
