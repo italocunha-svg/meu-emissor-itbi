@@ -1,5 +1,5 @@
 # Usa a imagem oficial da Microsoft que JÁ VEM com o navegador e todas as peças gráficas
-FROM mcr.microsoft.com/playwright/python:v1.42.0-jammy
+FROM mcr.microsoft.com/playwright/python:v1.62.0-jammy
 
 # Define a pasta de trabalho dentro do servidor
 WORKDIR /app
