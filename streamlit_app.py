@@ -3,6 +3,13 @@ from playwright.sync_api import sync_playwright
 import os
 import time
 
+# Faz o download do navegador virtual apenas uma vez quando o servidor liga
+@st.cache_resource
+def instalar_navegador():
+    os.system("playwright install chromium")
+    os.system("playwright install-deps chromium")
+
+instalar_navegador()
 # ==========================================
 # PREPARAÇÃO DO AMBIENTE NA NUVEM
 # ==========================================
