@@ -7,7 +7,6 @@ import time
 @st.cache_resource
 def instalar_navegador():
     os.system("playwright install chromium")
-    os.system("playwright install-deps chromium")
 
 instalar_navegador()
 # ==========================================
