@@ -1,20 +1,9 @@
 import streamlit as st
 from playwright.sync_api import sync_playwright
-import os
 import time
 
 # ==========================================
-# PREPARAÇÃO DO AMBIENTE NA NUVEM
-# ==========================================
-@st.cache_resource(show_spinner=False)
-def instalar_navegador():
-    # Força a instalação do Chromium no servidor Linux do Streamlit
-    os.system("playwright install chromium")
-
-instalar_navegador()
-
-# ==========================================
-# INTERFACE DO USUÁRIO (MANTIDA INTACTA)
+# INTERFACE DO USUÁRIO
 # ==========================================
 st.set_page_config(page_title="Emissor ITBI/CND", page_icon="📄")
 
@@ -37,7 +26,7 @@ with st.form("dados_form"):
 # ==========================================
 def gerar_documentos(insc, prop, compr):
     with sync_playwright() as p:
-        # Configuração máxima de sobrevivência para o Streamlit Cloud
+        # Configuração máxima de sobrevivência para nuvem
         browser = p.chromium.launch(
             headless=True,
             args=[
@@ -79,15 +68,25 @@ def gerar_documentos(insc, prop, compr):
                     wait_until="domcontentloaded",
                     timeout=60000
                 )
-                page.fill("#vINSCRICAO", insc)
-                with context.expect_page() as popup_info:
-                    page.click("#enviarINSCRICAO")
                 
-                aba_cnd = popup_info.value
-                aba_cnd.wait_for_load_state("networkidle")
-                pdf_cnd = aba_cnd.pdf(format="A4", print_background=True)
-                documentos['cnd'] = pdf_cnd
-                aba_cnd.close()
+                try:
+                    # Trava para garantir que o campo carregou e captura de tela em caso de falha
+                    page.locator("#vINSCRICAO").wait_for(state="visible", timeout=30000)
+                    page.fill("#vINSCRICAO", insc)
+                    with context.expect_page() as popup_info:
+                        page.click("#enviarINSCRICAO")
+                    
+                    aba_cnd = popup_info.value
+                    aba_cnd.wait_for_load_state("networkidle")
+                    pdf_cnd = aba_cnd.pdf(format="A4", print_background=True)
+                    documentos['cnd'] = pdf_cnd
+                    aba_cnd.close()
+                    
+                except Exception as e:
+                    page.screenshot(path="visao_do_robo_cnd.png")
+                    st.error("O robô não encontrou o campo de Inscrição na CND. Veja o que ele está enxergando na tela:")
+                    st.image("visao_do_robo_cnd.png")
+                    raise e # Interrompe a execução e pula para o fechamento
 
             # =========================================================
             # 2. ITBI
@@ -98,17 +97,27 @@ def gerar_documentos(insc, prop, compr):
                     wait_until="domcontentloaded",
                     timeout=60000
                 )
-                page.fill("#INSCRICAO", insc)
-                page.fill("#CPF_PROP", prop)
-                page.fill("#CPF_COMPR", compr)
-                with context.expect_page() as popup_info:
-                    page.click("#enviarINSCRICAO")
                 
-                aba_itbi = popup_info.value
-                aba_itbi.wait_for_load_state("networkidle")
-                pdf_itbi = aba_itbi.pdf(format="A4", print_background=True)
-                documentos['itbi'] = pdf_itbi
-                aba_itbi.close()
+                try:
+                    # Captura de tela para ITBI também, caso mude o padrão
+                    page.locator("#INSCRICAO").wait_for(state="visible", timeout=30000)
+                    page.fill("#INSCRICAO", insc)
+                    page.fill("#CPF_PROP", prop)
+                    page.fill("#CPF_COMPR", compr)
+                    with context.expect_page() as popup_info:
+                        page.click("#enviarINSCRICAO")
+                    
+                    aba_itbi = popup_info.value
+                    aba_itbi.wait_for_load_state("networkidle")
+                    pdf_itbi = aba_itbi.pdf(format="A4", print_background=True)
+                    documentos['itbi'] = pdf_itbi
+                    aba_itbi.close()
+                    
+                except Exception as e:
+                    page.screenshot(path="visao_do_robo_itbi.png")
+                    st.error("O robô não encontrou o campo de Inscrição no ITBI. Veja o que ele está enxergando na tela:")
+                    st.image("visao_do_robo_itbi.png")
+                    raise e
 
             return documentos
 
@@ -117,32 +126,27 @@ def gerar_documentos(insc, prop, compr):
             return None
         finally:
             browser.close()
+
 # ==========================================
 # EXECUÇÃO APÓS O CLIQUE
 # ==========================================
-# 1. Cria a "memória" do aplicativo se ela ainda não existir
 if 'arquivos_gerados' not in st.session_state:
     st.session_state.arquivos_gerados = None
     st.session_state.inscricao_salva = ""
 
-# 2. Ação principal: O que acontece quando clica em Gerar
 if submit_button:
     if not inscricao or not cpf_prop or not cpf_compr:
         st.warning("Por favor, preencha todos os campos.")
     else:
-        # Limpa a memória anterior caso esteja gerando uma nova guia
         st.session_state.arquivos_gerados = None 
         
         res = gerar_documentos(inscricao, cpf_prop, cpf_compr)
         
         if res:
-            # Em vez de apenas exibir, nós SALVAMOS os PDFs na memória
             st.session_state.arquivos_gerados = res
             st.session_state.inscricao_salva = inscricao
             st.success("Documentos gerados com sucesso!")
 
-# 3. Exibição dos botões: Fica FORA do bloco do botão Gerar.
-# O Streamlit vai sempre checar a memória. Se tiver arquivo lá, ele mostra os botões.
 if st.session_state.arquivos_gerados:
     st.markdown("---")
     st.markdown("### 🗂️ Arquivos Prontos")
