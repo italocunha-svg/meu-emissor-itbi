@@ -4,21 +4,8 @@ import time
 import pdfplumber
 import re
 
-# ==========================================
-# INTERFACE DO USUÁRIO & ESTADO
-# ==========================================
+# Configuração da página DEVE ser a primeira linha do Streamlit
 st.set_page_config(page_title="Emissor ITBI/CND", page_icon="📄")
-
-# Cria a memória para o auto-preenchimento
-if 'auto_insc' not in st.session_state:
-    st.session_state.auto_insc = ""
-if 'auto_prop' not in st.session_state:
-    st.session_state.auto_prop = ""
-if 'auto_compr' not in st.session_state:
-    st.session_state.auto_compr = ""
-
-st.title("📄 Automação de Tributos - Elmar")
-st.markdown("Faça o upload do Boleto de ITBI para preencher os dados automaticamente ou digite manualmente.")
 
 # ==========================================
 # CÉREBRO DE EXTRAÇÃO DO PDF
@@ -28,18 +15,24 @@ def extrair_dados_pdf(arquivo_pdf):
     try:
         with pdfplumber.open(arquivo_pdf) as pdf:
             for pagina in pdf.pages:
-                texto_pagina = pagina.extract_text()
-                if texto_pagina:
-                    texto_completo += texto_pagina + "\n"
-        
-        # Expressões Regulares (Regex) para encontrar os padrões no texto
+                # layout=True tenta respeitar as colunas do boleto
+                texto = pagina.extract_text(layout=True)
+                if texto:
+                    texto_completo += texto + "\n"
+
         inscricao = ""
-        # Procura "Inscr. do Imóvel:" ignorando espaços ou quebras de linha até achar o número
-        match_insc = re.search(r'Inscr\.\s*do\s*Imóvel:\s*(\d+)', texto_completo, re.IGNORECASE)
+        
+        # TÁTICA BLINDADA PARA A INSCRIÇÃO: 
+        # Procura a palavra Inscr ou Imóvel, ignora qualquer sujeira/endereço e pega o primeiro número com 10 a 20 dígitos.
+        match_insc = re.search(r'(?:Inscr|Inser|Im[oó]vel)[^\d]*?(\d{10,20})', texto_completo, re.IGNORECASE | re.DOTALL)
         if match_insc:
             inscricao = match_insc.group(1)
+        else:
+            # Plano B: Pega qualquer bloco numérico de 14 dígitos isolado no texto
+            match_insc_fallback = re.search(r'(?<![\.\-\/])\b(\d{14})\b(?![\.\-\/])', texto_completo)
+            if match_insc_fallback:
+                inscricao = match_insc_fallback.group(1)
             
-        # Procura todos os padrões "CPF/CNPJ: 000.000.000-00"
         cpfs = re.findall(r'CPF/CNPJ:\s*([\d\.\-\/]+)', texto_completo, re.IGNORECASE)
         
         cpf_prop = cpfs[0] if len(cpfs) > 0 else ""
@@ -47,8 +40,23 @@ def extrair_dados_pdf(arquivo_pdf):
         
         return inscricao, cpf_prop, cpf_compr
     except Exception as e:
-        st.error(f"Erro ao ler o PDF: {e}")
         return "", "", ""
+
+# ==========================================
+# INTERFACE DO USUÁRIO & ESTADO
+# ==========================================
+# Cria a memória ancorada na 'key' das caixas de texto
+if 'insc_input' not in st.session_state:
+    st.session_state.insc_input = ""
+if 'prop_input' not in st.session_state:
+    st.session_state.prop_input = ""
+if 'compr_input' not in st.session_state:
+    st.session_state.compr_input = ""
+if 'ultimo_arquivo' not in st.session_state:
+    st.session_state.ultimo_arquivo = ""
+
+st.title("📄 Automação de Tributos - Elmar")
+st.markdown("Faça o upload do Boleto de ITBI para preencher os dados automaticamente ou digite manualmente.")
 
 # ==========================================
 # ÁREA DE UPLOAD
@@ -56,38 +64,39 @@ def extrair_dados_pdf(arquivo_pdf):
 arquivo_up = st.file_uploader("Arraste o Boleto de ITBI aqui (PDF)", type=["pdf"])
 
 if arquivo_up is not None:
-    # Só faz a extração se ainda não tiver feito para esse arquivo
-    if st.session_state.get('ultimo_arquivo') != arquivo_up.name:
+    # Impede que ele fique extraindo infinitamente o mesmo arquivo
+    if st.session_state.ultimo_arquivo != arquivo_up.name:
         with st.spinner("Lendo documento..."):
             insc, prop, compr = extrair_dados_pdf(arquivo_up)
             
-            # Alimenta a memória do Streamlit
-            st.session_state.auto_insc = insc
-            st.session_state.auto_prop = prop
-            st.session_state.auto_compr = compr
+            # Injeta os valores na memória do aplicativo
+            st.session_state.insc_input = insc
+            st.session_state.prop_input = prop
+            st.session_state.compr_input = compr
             st.session_state.ultimo_arquivo = arquivo_up.name
             
-            st.success("Dados extraídos! Confira abaixo antes de gerar.")
+            # O SEGREDO: Força a interface a piscar e exibir os números lidos!
+            st.rerun()
 
 st.markdown("---")
 
 # ==========================================
-# FORMULÁRIO (AUTO-PREENCHIDO)
+# FORMULÁRIO (AUTO-PREENCHIDO PELA MEMÓRIA)
 # ==========================================
 with st.form("dados_form"):
     col1, col2, col3 = st.columns(3)
     with col1:
-        # Usa o value conectado ao session_state
-        inscricao = st.text_input("Inscrição Imobiliária", value=st.session_state.auto_insc)
+        # A caixa agora obedece à 'key' que foi preenchida lá em cima
+        inscricao = st.text_input("Inscrição Imobiliária", key="insc_input")
     with col2:     
-        cpf_prop = st.text_input("CPF/CNPJ do Vendedor", value=st.session_state.auto_prop)
+        cpf_prop = st.text_input("CPF/CNPJ do Vendedor", key="prop_input")
     with col3:
-        cpf_compr = st.text_input("CPF/CNPJ do Comprador", value=st.session_state.auto_compr)
+        cpf_compr = st.text_input("CPF/CNPJ do Comprador", key="compr_input")
     
     submit_button = st.form_submit_button("Gerar Documentos")
 
 # ==========================================
-# MOTOR DE AUTOMAÇÃO (Navegação Web)
+# MOTOR DE AUTOMAÇÃO (ROBÔ)
 # ==========================================
 def gerar_documentos(insc, prop, compr):
     with sync_playwright() as p:
@@ -112,11 +121,7 @@ def gerar_documentos(insc, prop, compr):
         documentos = {}
 
         try:
-            page.goto(
-                "https://tributos.elmartecnologia.com.br/portal/?ecode=201082", 
-                wait_until="domcontentloaded",
-                timeout=60000
-            )
+            page.goto("https://tributos.elmartecnologia.com.br/portal/?ecode=201082", wait_until="domcontentloaded", timeout=60000)
             time.sleep(2)
 
             # --- CND ---
@@ -178,7 +183,7 @@ if 'arquivos_gerados' not in st.session_state:
 
 if submit_button:
     if not inscricao or not cpf_prop or not cpf_compr:
-        st.warning("Por favor, preencha todos os campos.")
+        st.warning("Por favor, preencha todos os campos (se não usar o PDF, digite os valores).")
     else:
         st.session_state.arquivos_gerados = None 
         res = gerar_documentos(inscricao, cpf_prop, cpf_compr)
