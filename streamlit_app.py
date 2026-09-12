@@ -1,32 +1,96 @@
 import streamlit as st
 from playwright.sync_api import sync_playwright
 import time
+import pdfplumber
+import re
 
 # ==========================================
-# INTERFACE DO USUÁRIO
+# INTERFACE DO USUÁRIO & ESTADO
 # ==========================================
 st.set_page_config(page_title="Emissor ITBI/CND", page_icon="📄")
 
-st.title("📄 Automação de Tributos - Elmar")
-st.markdown("Preencha os dados abaixo para gerar a CND e a Guia de ITBI automaticamente.")
+# Cria a memória para o auto-preenchimento
+if 'auto_insc' not in st.session_state:
+    st.session_state.auto_insc = ""
+if 'auto_prop' not in st.session_state:
+    st.session_state.auto_prop = ""
+if 'auto_compr' not in st.session_state:
+    st.session_state.auto_compr = ""
 
+st.title("📄 Automação de Tributos - Elmar")
+st.markdown("Faça o upload do Boleto de ITBI para preencher os dados automaticamente ou digite manualmente.")
+
+# ==========================================
+# CÉREBRO DE EXTRAÇÃO DO PDF
+# ==========================================
+def extrair_dados_pdf(arquivo_pdf):
+    texto_completo = ""
+    try:
+        with pdfplumber.open(arquivo_pdf) as pdf:
+            for pagina in pdf.pages:
+                texto_pagina = pagina.extract_text()
+                if texto_pagina:
+                    texto_completo += texto_pagina + "\n"
+        
+        # Expressões Regulares (Regex) para encontrar os padrões no texto
+        inscricao = ""
+        # Procura "Inscr. do Imóvel:" ignorando espaços ou quebras de linha até achar o número
+        match_insc = re.search(r'Inscr\.\s*do\s*Imóvel:\s*(\d+)', texto_completo, re.IGNORECASE)
+        if match_insc:
+            inscricao = match_insc.group(1)
+            
+        # Procura todos os padrões "CPF/CNPJ: 000.000.000-00"
+        cpfs = re.findall(r'CPF/CNPJ:\s*([\d\.\-\/]+)', texto_completo, re.IGNORECASE)
+        
+        cpf_prop = cpfs[0] if len(cpfs) > 0 else ""
+        cpf_compr = cpfs[1] if len(cpfs) > 1 else ""
+        
+        return inscricao, cpf_prop, cpf_compr
+    except Exception as e:
+        st.error(f"Erro ao ler o PDF: {e}")
+        return "", "", ""
+
+# ==========================================
+# ÁREA DE UPLOAD
+# ==========================================
+arquivo_up = st.file_uploader("Arraste o Boleto de ITBI aqui (PDF)", type=["pdf"])
+
+if arquivo_up is not None:
+    # Só faz a extração se ainda não tiver feito para esse arquivo
+    if st.session_state.get('ultimo_arquivo') != arquivo_up.name:
+        with st.spinner("Lendo documento..."):
+            insc, prop, compr = extrair_dados_pdf(arquivo_up)
+            
+            # Alimenta a memória do Streamlit
+            st.session_state.auto_insc = insc
+            st.session_state.auto_prop = prop
+            st.session_state.auto_compr = compr
+            st.session_state.ultimo_arquivo = arquivo_up.name
+            
+            st.success("Dados extraídos! Confira abaixo antes de gerar.")
+
+st.markdown("---")
+
+# ==========================================
+# FORMULÁRIO (AUTO-PREENCHIDO)
+# ==========================================
 with st.form("dados_form"):
     col1, col2, col3 = st.columns(3)
     with col1:
-        inscricao = st.text_input("Inscrição Imobiliária", placeholder="Ex: 123456")
+        # Usa o value conectado ao session_state
+        inscricao = st.text_input("Inscrição Imobiliária", value=st.session_state.auto_insc)
     with col2:     
-        cpf_prop = st.text_input("CPF/CNPJ do Vendedor", placeholder="000.000.000-00")
+        cpf_prop = st.text_input("CPF/CNPJ do Vendedor", value=st.session_state.auto_prop)
     with col3:
-        cpf_compr = st.text_input("CPF/CNPJ do Comprador", placeholder="000.000.000-00")
+        cpf_compr = st.text_input("CPF/CNPJ do Comprador", value=st.session_state.auto_compr)
     
     submit_button = st.form_submit_button("Gerar Documentos")
 
 # ==========================================
-# MOTOR DE AUTOMAÇÃO
+# MOTOR DE AUTOMAÇÃO (Navegação Web)
 # ==========================================
 def gerar_documentos(insc, prop, compr):
     with sync_playwright() as p:
-        # Configuração máxima de sobrevivência para nuvem
         browser = p.chromium.launch(
             headless=True,
             args=[
@@ -34,9 +98,9 @@ def gerar_documentos(insc, prop, compr):
                 "--no-sandbox",
                 "--disable-setuid-sandbox",
                 "--disable-gpu",
-                "--no-zygote",          # Evita a pré-alocação de memória do Chrome
-                "--single-process",     # Força o navegador a rodar em uma única thread
-                "--disable-features=site-per-process" # Remove o isolamento de segurança pesado
+                "--no-zygote",          
+                "--single-process",     
+                "--disable-features=site-per-process" 
             ]
         )
         
@@ -45,13 +109,9 @@ def gerar_documentos(insc, prop, compr):
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         )
         page = context.new_page()
-        
         documentos = {}
 
         try:
-            # =========================================================
-            # 0. Sessão (Autenticação)
-            # =========================================================
             page.goto(
                 "https://tributos.elmartecnologia.com.br/portal/?ecode=201082", 
                 wait_until="domcontentloaded",
@@ -59,18 +119,10 @@ def gerar_documentos(insc, prop, compr):
             )
             time.sleep(2)
 
-            # =========================================================
-            # 1. CND
-            # =========================================================
+            # --- CND ---
             with st.spinner("Gerando CND..."):
-                page.goto(
-                    "https://tributos.elmartecnologia.com.br/portal/buscaCertidaoImob.php",
-                    wait_until="domcontentloaded",
-                    timeout=60000
-                )
-                
+                page.goto("https://tributos.elmartecnologia.com.br/portal/buscaCertidaoImob.php", wait_until="domcontentloaded", timeout=60000)
                 try:
-                    # Trava para garantir que o campo carregou e captura de tela em caso de falha
                     page.locator("#vINSCRICAO").wait_for(state="visible", timeout=30000)
                     page.fill("#vINSCRICAO", insc)
                     with context.expect_page() as popup_info:
@@ -81,25 +133,16 @@ def gerar_documentos(insc, prop, compr):
                     pdf_cnd = aba_cnd.pdf(format="A4", print_background=True)
                     documentos['cnd'] = pdf_cnd
                     aba_cnd.close()
-                    
                 except Exception as e:
                     page.screenshot(path="visao_do_robo_cnd.png")
-                    st.error("O robô não encontrou o campo de Inscrição na CND. Veja o que ele está enxergando na tela:")
+                    st.error("Erro na CND. Veja a tela:")
                     st.image("visao_do_robo_cnd.png")
-                    raise e # Interrompe a execução e pula para o fechamento
+                    raise e 
 
-            # =========================================================
-            # 2. ITBI
-            # =========================================================
+            # --- ITBI ---
             with st.spinner("Gerando Guia de ITBI..."):
-                page.goto(
-                    "https://tributos.elmartecnologia.com.br/portal/buscaITBI.php",
-                    wait_until="domcontentloaded",
-                    timeout=60000
-                )
-                
+                page.goto("https://tributos.elmartecnologia.com.br/portal/buscaITBI.php", wait_until="domcontentloaded", timeout=60000)
                 try:
-                    # Captura de tela para ITBI também, caso mude o padrão
                     page.locator("#INSCRICAO").wait_for(state="visible", timeout=30000)
                     page.fill("#INSCRICAO", insc)
                     page.fill("#CPF_PROP", prop)
@@ -112,10 +155,9 @@ def gerar_documentos(insc, prop, compr):
                     pdf_itbi = aba_itbi.pdf(format="A4", print_background=True)
                     documentos['itbi'] = pdf_itbi
                     aba_itbi.close()
-                    
                 except Exception as e:
                     page.screenshot(path="visao_do_robo_itbi.png")
-                    st.error("O robô não encontrou o campo de Inscrição no ITBI. Veja o que ele está enxergando na tela:")
+                    st.error("Erro no ITBI. Veja a tela:")
                     st.image("visao_do_robo_itbi.png")
                     raise e
 
@@ -139,7 +181,6 @@ if submit_button:
         st.warning("Por favor, preencha todos os campos.")
     else:
         st.session_state.arquivos_gerados = None 
-        
         res = gerar_documentos(inscricao, cpf_prop, cpf_compr)
         
         if res:
@@ -153,17 +194,8 @@ if st.session_state.arquivos_gerados:
     col_d1, col_d2 = st.columns(2)
     
     with col_d1:
-        st.download_button(
-            label="⬇️ Baixar CND",
-            data=st.session_state.arquivos_gerados['cnd'],
-            file_name=f"CND_{st.session_state.inscricao_salva}.pdf",
-            mime="application/pdf"
-        )
+        st.download_button(label="⬇️ Baixar CND", data=st.session_state.arquivos_gerados['cnd'], file_name=f"CND_{st.session_state.inscricao_salva}.pdf", mime="application/pdf")
     
     with col_d2:
-        st.download_button(
-            label="⬇️ Baixar Guia ITBI",
-            data=st.session_state.arquivos_gerados['itbi'],
-            file_name=f"ITBI_{st.session_state.inscricao_salva}.pdf",
-            mime="application/pdf"
-        )
+        st.download_button(label="⬇️ Baixar Guia ITBI", data=st.session_state.arquivos_gerados['itbi'], file_name=f"ITBI_{st.session_state.inscricao_salva}.pdf", mime="application/pdf")
+                    
