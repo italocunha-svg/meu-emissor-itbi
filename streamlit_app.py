@@ -3,9 +3,11 @@ from playwright.sync_api import sync_playwright
 import time
 import pdfplumber
 import re
+import pandas as pd
+import io
+import zipfile
 
-# Configuração da página DEVE ser a primeira linha do Streamlit
-st.set_page_config(page_title="Emissor ITBI/CND", page_icon="📄")
+st.set_page_config(page_title="Emissor ITBI/CND em Lote", page_icon="📑", layout="wide")
 
 # ==========================================
 # CÉREBRO DE EXTRAÇÃO DO PDF
@@ -15,20 +17,15 @@ def extrair_dados_pdf(arquivo_pdf):
     try:
         with pdfplumber.open(arquivo_pdf) as pdf:
             for pagina in pdf.pages:
-                # layout=True tenta respeitar as colunas do boleto
                 texto = pagina.extract_text(layout=True)
                 if texto:
                     texto_completo += texto + "\n"
 
         inscricao = ""
-        
-        # TÁTICA BLINDADA PARA A INSCRIÇÃO: 
-        # Procura a palavra Inscr ou Imóvel, ignora qualquer sujeira/endereço e pega o primeiro número com 10 a 20 dígitos.
         match_insc = re.search(r'(?:Inscr|Inser|Im[oó]vel)[^\d]*?(\d{10,20})', texto_completo, re.IGNORECASE | re.DOTALL)
         if match_insc:
             inscricao = match_insc.group(1)
         else:
-            # Plano B: Pega qualquer bloco numérico de 14 dígitos isolado no texto
             match_insc_fallback = re.search(r'(?<![\.\-\/])\b(\d{14})\b(?![\.\-\/])', texto_completo)
             if match_insc_fallback:
                 inscricao = match_insc_fallback.group(1)
@@ -39,168 +36,195 @@ def extrair_dados_pdf(arquivo_pdf):
         cpf_compr = cpfs[1] if len(cpfs) > 1 else ""
         
         return inscricao, cpf_prop, cpf_compr
-    except Exception as e:
+    except Exception:
         return "", "", ""
 
 # ==========================================
-# INTERFACE DO USUÁRIO & ESTADO
+# GESTÃO DE ESTADO E ARQUIVOS
 # ==========================================
-# Cria a memória ancorada na 'key' das caixas de texto
-if 'insc_input' not in st.session_state:
-    st.session_state.insc_input = ""
-if 'prop_input' not in st.session_state:
-    st.session_state.prop_input = ""
-if 'compr_input' not in st.session_state:
-    st.session_state.compr_input = ""
-if 'ultimo_arquivo' not in st.session_state:
-    st.session_state.ultimo_arquivo = ""
+if 'df_dados' not in st.session_state:
+    # Cria a estrutura inicial da tabela
+    st.session_state.df_dados = pd.DataFrame(columns=["Arquivo", "Inscrição", "CPF Vendedor", "CPF Comprador"])
+if 'arquivos_anteriores' not in st.session_state:
+    st.session_state.arquivos_anteriores = []
+if 'arquivo_zip_pronto' not in st.session_state:
+    st.session_state.arquivo_zip_pronto = None
 
-st.title("📄 Automação de Tributos - Elmar")
-st.markdown("Faça o upload do Boleto de ITBI para preencher os dados automaticamente ou digite manualmente.")
+st.title("📑 Emissor em Lote - Tributos Elmar")
+st.markdown("Arraste **vários** boletos ao mesmo tempo. Os dados formarão uma tabela que você pode revisar e editar antes de emitir.")
 
 # ==========================================
-# ÁREA DE UPLOAD
+# 1. ÁREA DE UPLOAD (MÚLTIPLOS ARQUIVOS)
 # ==========================================
-arquivo_up = st.file_uploader("Arraste o Boleto de ITBI aqui (PDF)", type=["pdf"])
+uploaded_files = st.file_uploader("Arraste os Boletos de ITBI aqui (PDFs)", type=["pdf"], accept_multiple_files=True)
 
-if arquivo_up is not None:
-    # Impede que ele fique extraindo infinitamente o mesmo arquivo
-    if st.session_state.ultimo_arquivo != arquivo_up.name:
-        with st.spinner("Lendo documento..."):
-            insc, prop, compr = extrair_dados_pdf(arquivo_up)
-            
-            # Injeta os valores na memória do aplicativo
-            st.session_state.insc_input = insc
-            st.session_state.prop_input = prop
-            st.session_state.compr_input = compr
-            st.session_state.ultimo_arquivo = arquivo_up.name
-            
-            # O SEGREDO: Força a interface a piscar e exibir os números lidos!
-            st.rerun()
+# Lógica para só reprocessar se o usuário colocar/tirar um arquivo novo
+nomes_atuais = [f.name for f in uploaded_files] if uploaded_files else []
+
+if nomes_atuais != st.session_state.arquivos_anteriores:
+    dados_extraidos = []
+    if uploaded_files:
+        with st.spinner("Lendo todos os documentos..."):
+            for file in uploaded_files:
+                insc, prop, compr = extrair_dados_pdf(file)
+                dados_extraidos.append({
+                    "Arquivo": file.name,
+                    "Inscrição": insc,
+                    "CPF Vendedor": prop,
+                    "CPF Comprador": compr
+                })
+        # Atualiza a tabela na memória
+        st.session_state.df_dados = pd.DataFrame(dados_extraidos)
+    else:
+        # Se esvaziar a caixa, limpa a tabela
+        st.session_state.df_dados = pd.DataFrame(columns=["Arquivo", "Inscrição", "CPF Vendedor", "CPF Comprador"])
+    
+    st.session_state.arquivos_anteriores = nomes_atuais
+    st.rerun()
 
 st.markdown("---")
 
 # ==========================================
-# FORMULÁRIO (AUTO-PREENCHIDO PELA MEMÓRIA)
+# 2. TABELA INTERATIVA DE VALIDAÇÃO
 # ==========================================
-with st.form("dados_form"):
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        # A caixa agora obedece à 'key' que foi preenchida lá em cima
-        inscricao = st.text_input("Inscrição Imobiliária", key="insc_input")
-    with col2:     
-        cpf_prop = st.text_input("CPF/CNPJ do Vendedor", key="prop_input")
-    with col3:
-        cpf_compr = st.text_input("CPF/CNPJ do Comprador", key="compr_input")
-    
-    submit_button = st.form_submit_button("Gerar Documentos")
+st.markdown("### 📋 Tabela de Dados (Revise ou edite os números abaixo)")
+
+# st.data_editor permite que você clique e altere os números como no Excel
+df_editado = st.data_editor(
+    st.session_state.df_dados, 
+    num_rows="dynamic", # Permite adicionar linhas manualmente se não quiser usar PDF
+    use_container_width=True,
+    hide_index=True
+)
+
+submit_button = st.button("🚀 Gerar Lote de Documentos", type="primary")
 
 # ==========================================
-# MOTOR DE AUTOMAÇÃO (ROBÔ)
+# 3. MOTOR DE AUTOMAÇÃO EM LOTE
 # ==========================================
-def gerar_documentos(insc, prop, compr):
+def gerar_lote_zip(df_valido):
+    # Cria o arquivo ZIP invisível na memória do servidor
+    zip_buffer = io.BytesIO()
+    
     with sync_playwright() as p:
         browser = p.chromium.launch(
             headless=True,
-            args=[
-                "--disable-dev-shm-usage",
-                "--no-sandbox",
-                "--disable-setuid-sandbox",
-                "--disable-gpu",
-                "--no-zygote",          
-                "--single-process",     
-                "--disable-features=site-per-process" 
-            ]
+            args=["--disable-dev-shm-usage", "--no-sandbox", "--disable-setuid-sandbox", "--disable-gpu", "--no-zygote", "--single-process", "--disable-features=site-per-process"]
         )
-        
-        context = browser.new_context(
-            accept_downloads=True,
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        )
+        context = browser.new_context(accept_downloads=True, user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36")
         page = context.new_page()
-        documentos = {}
+        
+        # Abre o arquivo ZIP para começarmos a colocar os PDFs dentro
+        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+            
+            # Conta o progresso
+            total_arquivos = len(df_valido)
+            barra_progresso = st.progress(0)
+            status_texto = st.empty()
 
-        try:
-            page.goto("https://tributos.elmartecnologia.com.br/portal/?ecode=201082", wait_until="domcontentloaded", timeout=60000)
-            time.sleep(2)
-
-            # --- CND ---
-            with st.spinner("Gerando CND..."):
-                page.goto("https://tributos.elmartecnologia.com.br/portal/buscaCertidaoImob.php", wait_until="domcontentloaded", timeout=60000)
-                try:
+            try:
+                # Login / Autenticação (feita 1 vez só)
+                status_texto.text("Acessando sistema Elmar...")
+                page.goto("https://tributos.elmartecnologia.com.br/portal/?ecode=201082", wait_until="domcontentloaded", timeout=60000)
+                time.sleep(2)
+                
+                # Loop por cada linha da tabela
+                for index, row in df_valido.iterrows():
+                    insc = str(row['Inscrição']).strip()
+                    prop = str(row['CPF Vendedor']).strip()
+                    compr = str(row['CPF Comprador']).strip()
+                    
+                    status_texto.text(f"Emitindo Inscrição: {insc} ({index+1}/{total_arquivos})")
+                    
+                    # --- CND ---
+                    page.goto("https://tributos.elmartecnologia.com.br/portal/buscaCertidaoImob.php", wait_until="domcontentloaded", timeout=60000)
                     page.locator("#vINSCRICAO").wait_for(state="visible", timeout=30000)
                     page.fill("#vINSCRICAO", insc)
-                    with context.expect_page() as popup_info:
+                    with context.expect_page() as popup_cnd:
                         page.click("#enviarINSCRICAO")
                     
-                    aba_cnd = popup_info.value
+                    aba_cnd = popup_cnd.value
                     aba_cnd.wait_for_load_state("networkidle")
                     pdf_cnd = aba_cnd.pdf(format="A4", print_background=True)
-                    documentos['cnd'] = pdf_cnd
+                    zip_file.writestr(f"CND_{insc}.pdf", pdf_cnd) # Salva no ZIP
                     aba_cnd.close()
-                except Exception as e:
-                    page.screenshot(path="visao_do_robo_cnd.png")
-                    st.error("Erro na CND. Veja a tela:")
-                    st.image("visao_do_robo_cnd.png")
-                    raise e 
 
-            # --- ITBI ---
-            with st.spinner("Gerando Guia de ITBI..."):
-                page.goto("https://tributos.elmartecnologia.com.br/portal/buscaITBI.php", wait_until="domcontentloaded", timeout=60000)
-                try:
+                    # --- ITBI ---
+                    page.goto("https://tributos.elmartecnologia.com.br/portal/buscaITBI.php", wait_until="domcontentloaded", timeout=60000)
                     page.locator("#INSCRICAO").wait_for(state="visible", timeout=30000)
                     page.fill("#INSCRICAO", insc)
                     page.fill("#CPF_PROP", prop)
                     page.fill("#CPF_COMPR", compr)
-                    with context.expect_page() as popup_info:
+                    with context.expect_page() as popup_itbi:
                         page.click("#enviarINSCRICAO")
                     
-                    aba_itbi = popup_info.value
+                    aba_itbi = popup_itbi.value
                     aba_itbi.wait_for_load_state("networkidle")
                     pdf_itbi = aba_itbi.pdf(format="A4", print_background=True)
-                    documentos['itbi'] = pdf_itbi
+                    zip_file.writestr(f"ITBI_{insc}.pdf", pdf_itbi) # Salva no ZIP
                     aba_itbi.close()
-                except Exception as e:
-                    page.screenshot(path="visao_do_robo_itbi.png")
-                    st.error("Erro no ITBI. Veja a tela:")
-                    st.image("visao_do_robo_itbi.png")
-                    raise e
-
-            return documentos
-
-        except Exception as e:
-            st.error(f"Erro durante a navegação do robô: {e}")
-            return None
-        finally:
-            browser.close()
-
-# ==========================================
-# EXECUÇÃO APÓS O CLIQUE
-# ==========================================
-if 'arquivos_gerados' not in st.session_state:
-    st.session_state.arquivos_gerados = None
-    st.session_state.inscricao_salva = ""
-
-if submit_button:
-    if not inscricao or not cpf_prop or not cpf_compr:
-        st.warning("Por favor, preencha todos os campos (se não usar o PDF, digite os valores).")
-    else:
-        st.session_state.arquivos_gerados = None 
-        res = gerar_documentos(inscricao, cpf_prop, cpf_compr)
-        
-        if res:
-            st.session_state.arquivos_gerados = res
-            st.session_state.inscricao_salva = inscricao
-            st.success("Documentos gerados com sucesso!")
-
-if st.session_state.arquivos_gerados:
-    st.markdown("---")
-    st.markdown("### 🗂️ Arquivos Prontos")
-    col_d1, col_d2 = st.columns(2)
-    
-    with col_d1:
-        st.download_button(label="⬇️ Baixar CND", data=st.session_state.arquivos_gerados['cnd'], file_name=f"CND_{st.session_state.inscricao_salva}.pdf", mime="application/pdf")
-    
-    with col_d2:
-        st.download_button(label="⬇️ Baixar Guia ITBI", data=st.session_state.arquivos_gerados['itbi'], file_name=f"ITBI_{st.session_state.inscricao_salva}.pdf", mime="application/pdf")
                     
+                    # Atualiza a barra de progresso
+                    barra_progresso.progress((index + 1) / total_arquivos)
+
+            except Exception as e:
+                page.screenshot(path="erro_automacao.png")
+                st.error("Erro na navegação do robô durante o lote. Veja a tela onde ele parou:")
+                st.image("erro_automacao.png")
+                browser.close()
+                return None
+                
+        browser.close()
+        
+    status_texto.text("Lote concluído com sucesso!")
+    return zip_buffer.getvalue()
+
+# ==========================================
+# 4. EXECUÇÃO E REGRAS DE NEGÓCIO (A TRAVA DE SEGURANÇA)
+# ==========================================
+if submit_button:
+    st.session_state.arquivo_zip_pronto = None
+    
+    # Remove linhas vazias se o usuário criou linha na tabela e não preencheu
+    df_valido = df_editado.dropna(subset=['Inscrição', 'CPF Vendedor', 'CPF Comprador'], how='all')
+    df_valido = df_valido.fillna("")
+    
+    if df_valido.empty:
+        st.warning("A tabela está vazia. Suba os boletos ou preencha manualmente.")
+    else:
+        tem_erro = False
+        
+        # CHECAGEM 1: Campos em branco e CHECAGEM 2: Inconsistência de CPF idêntico
+        for idx, row in df_valido.iterrows():
+            insc = str(row['Inscrição']).strip()
+            prop = str(row['CPF Vendedor']).strip()
+            compr = str(row['CPF Comprador']).strip()
+            
+            if not insc or not prop or not compr:
+                st.error(f"⚠️ A Inscrição '{insc}' possui campos em branco na tabela. Preencha todos os dados antes de gerar.")
+                tem_erro = True
+                break
+                
+            if prop == compr:
+                st.error(f"🚨 INCONSISTÊNCIA DETECTADA: Na inscrição **{insc}**, o CPF do Vendedor ({prop}) é idêntico ao do Comprador. Geração abortada por segurança.")
+                tem_erro = True
+                break
+        
+        # Se passou em todas as regras de segurança, chama o robô!
+        if not tem_erro:
+            resultado_zip = gerar_lote_zip(df_valido)
+            if resultado_zip:
+                st.session_state.arquivo_zip_pronto = resultado_zip
+                st.success("🎉 Todos os documentos foram gerados e empacotados!")
+
+# Botão final para baixar o ZIP
+if st.session_state.arquivo_zip_pronto:
+    st.markdown("---")
+    st.markdown("### 🗂️ Lote Pronto para Download")
+    st.download_button(
+        label="⬇️ BAIXAR LOTE COMPLETO (.ZIP)",
+        data=st.session_state.arquivo_zip_pronto,
+        file_name="Lote_Documentos_ITBI.zip",
+        mime="application/zip",
+        type="primary"
+    )
